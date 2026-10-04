@@ -9,7 +9,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/usingcoding/ttsh/internal/app"
 	"github.com/usingcoding/ttsh/internal/domain"
 	"github.com/usingcoding/ttsh/internal/suggestions"
@@ -35,6 +35,8 @@ type Model struct {
 	date            time.Time
 	selected        int
 	width, height   int
+	theme           Theme
+	styles          styles
 	mode            mode
 	inputs          []textinput.Model
 	focus           int
@@ -61,7 +63,12 @@ func New(service *app.Service, provider suggestions.Provider, logger *slog.Logge
 	if err != nil {
 		return Model{}, err
 	}
-	model := Model{service: service, provider: provider, logger: logger, session: session, date: domain.DateOnly(now), selected: -1, mode: modeSheet}
+	theme := defaultMutedSlateTheme()
+	model := Model{
+		service: service, provider: provider, logger: logger, session: session,
+		date: domain.DateOnly(now), selected: -1, mode: modeSheet,
+		theme: theme, styles: newStyles(theme),
+	}
 	if len(session.List()) > 0 {
 		model.selected = 0
 	}
@@ -99,6 +106,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch value := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = value.Width, value.Height
+		m.configureInputs()
 		return m, nil
 	case tickMsg:
 		return m, m.Init()
@@ -195,10 +203,26 @@ func (m *Model) openForm(edit bool, index int) {
 		input.CharLimit = 256
 		m.inputs[i] = input
 	}
+	m.configureInputs()
 	m.focus = 0
 	m.inputs[0].Focus()
 	m.suggestions = m.provider.Names(context.Background())
 	m.suggestionIndex = 0
+}
+
+func (m *Model) configureInputs() {
+	width := 52
+	if viewport, ok := newViewport(m.width, m.height); ok {
+		width = min(52, max(viewport.width-10, 8))
+	}
+	for i := range m.inputs {
+		m.inputs[i].Prompt = ""
+		m.inputs[i].Width = width
+		m.inputs[i].TextStyle = m.styles.formFocused
+		m.inputs[i].PlaceholderStyle = m.styles.formInactive
+		m.inputs[i].CompletionStyle = m.styles.suggestion
+		m.inputs[i].Cursor.Style = m.styles.cursor
+	}
 }
 
 func (m *Model) updateModal(key tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -409,39 +433,282 @@ func (m Model) updateCalendar(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) View() string {
-	base := m.renderSheet()
+	viewport, full := newViewport(m.width, m.height)
+	if !full {
+		return m.renderIntrinsic()
+	}
+	base := m.sheetCanvas(viewport)
+	if panel, ok := m.renderPopup(); ok {
+		base.popup(viewport, panel, m.styles)
+	}
+	return base.render()
+}
+
+func (m Model) sheetCanvas(viewport viewport) *canvas {
+	sheet := newCanvas(viewport.width, viewport.height, m.styles.canvas)
+	sheet.fill(0, 0, viewport.width, headerRows, m.styles.header)
+	sheet.write(1, 0, "ttsh", m.styles.headerTitle)
+	date := m.date.Format("Mon 2006-01-02")
+	if dateX := viewport.width - ansi.StringWidth(date) - 1; dateX > 6 {
+		sheet.write(dateX, 0, date, m.styles.date)
+	}
+
+	entries := m.session.List()
+	if len(entries) == 0 {
+		m.renderEmptyState(sheet, viewport)
+	} else {
+		m.renderEntries(sheet, viewport, entries)
+	}
+	m.renderFooter(sheet, viewport, entries)
+	return sheet
+}
+
+func (m Model) renderEmptyState(sheet *canvas, viewport viewport) {
+	row := viewport.bodyTop + min(max(viewport.bodyHeight()/3, 0), max(viewport.bodyHeight()-1, 0))
+	if row >= viewport.bodyBottom {
+		return
+	}
+	sheet.write(viewport.contentX, row, clipped("No entries today", viewport.contentWidth), m.styles.empty)
+	if row+1 < viewport.bodyBottom {
+		sheet.write(viewport.contentX, row+1, clipped("n create entry", viewport.contentWidth), m.styles.footerKey)
+	}
+}
+
+func (m Model) renderEntries(sheet *canvas, viewport viewport, entries []domain.Entry) {
+	window := visibleEntries(len(entries), m.selected, viewport.bodyHeight())
+	row := viewport.bodyTop
+	if window.above && row < viewport.bodyBottom {
+		sheet.write(viewport.contentX, row, clipped("↑ earlier entries", viewport.contentWidth), m.styles.empty)
+		row++
+	}
+	for index := window.start; index < window.end && row < viewport.bodyBottom; index++ {
+		m.renderEntry(sheet, viewport, row, index, entries[index])
+		row++
+	}
+	if window.below && row < viewport.bodyBottom {
+		sheet.write(viewport.contentX, row, clipped("↓ later entries", viewport.contentWidth), m.styles.empty)
+	}
+}
+
+func (m Model) renderEntry(sheet *canvas, viewport viewport, row, index int, entry domain.Entry) {
+	selected := index == m.selected
+	rowStyle := m.styles.entry
+	nameStyle, startStyle, endStyle, descriptionStyle := m.styles.entryName, m.styles.entryStart, m.styles.entryEnd, m.styles.entryDescription
+	runningStyle := m.styles.running
+	markerStyle := m.styles.entry
+	if selected {
+		rowStyle = m.styles.entrySelected
+		nameStyle, startStyle, endStyle, descriptionStyle = m.styles.entrySelectedName, m.styles.entrySelectedStart, m.styles.entrySelectedEnd, m.styles.entrySelectedDesc
+		runningStyle = m.styles.runningSelected
+		markerStyle = m.styles.cursor
+	}
+	sheet.fill(viewport.contentX, row, viewport.contentWidth, 1, rowStyle)
+	x := viewport.contentX
+	marker := " "
+	if selected {
+		marker = ">"
+	}
+	sheet.write(x, row, marker, markerStyle)
+	x += 2
+	name := clipped("<"+entry.Name+">", max(viewport.contentWidth-(x-viewport.contentX), 0))
+	sheet.write(x, row, name, nameStyle)
+	x += ansi.StringWidth(name)
+	sheet.write(x, row, " ", rowStyle)
+	x++
+	start := entry.Start.String()
+	sheet.write(x, row, start, startStyle)
+	x += ansi.StringWidth(start)
+	interval := " → "
+	sheet.write(x, row, interval, rowStyle)
+	x += ansi.StringWidth(interval)
+	end := "..."
+	if entry.End != nil {
+		end = entry.End.String()
+	}
+	if entry.End == nil {
+		sheet.write(x, row, end, runningStyle)
+	} else {
+		sheet.write(x, row, end, endStyle)
+	}
+	x += ansi.StringWidth(end)
+	if entry.Description != "" && x < viewport.contentX+viewport.contentWidth {
+		prefix := " · "
+		sheet.write(x, row, prefix, rowStyle)
+		x += ansi.StringWidth(prefix)
+		sheet.write(x, row, clipped(entry.Description, viewport.contentX+viewport.contentWidth-x), descriptionStyle)
+	}
+}
+
+func (m Model) renderFooter(sheet *canvas, viewport viewport, entries []domain.Entry) {
+	statusRow := viewport.height - 2
+	hintsRow := viewport.height - 1
+	if statusRow < 0 {
+		return
+	}
+	sheet.fill(0, statusRow, viewport.width, 1, m.styles.status)
+	selection := "--"
+	if m.selected >= 0 && m.selected < len(entries) {
+		selection = fmt.Sprintf("#%d %s", m.selected+1, domain.FormatDuration(m.session.EntryDuration(entries[m.selected])))
+	}
+	sheet.write(1, statusRow, clipped(selection, max(viewport.width-2, 0)), m.styles.statusText)
+	summary := fmt.Sprintf("%d entries · %s", len(entries), domain.FormatDuration(m.session.CompletedTotal()))
+	if summaryWidth := ansi.StringWidth(summary); summaryWidth+ansi.StringWidth(selection)+3 <= viewport.width {
+		sheet.write(viewport.width-summaryWidth-1, statusRow, summary, m.styles.statusText)
+	}
+	if hintsRow < 0 {
+		return
+	}
+	sheet.fill(0, hintsRow, viewport.width, 1, m.styles.status)
+	hints := []struct{ key, label string }{
+		{"n", "new"}, {"e", "edit"}, {"s", "stop"}, {"c", "calendar"}, {"?", "help"}, {"q", "quit"},
+	}
+	x := 1
+	for _, hint := range hints {
+		needed := ansi.StringWidth(hint.key) + 1 + ansi.StringWidth(hint.label) + 2
+		if x+needed > viewport.width {
+			if x+3 > viewport.width {
+				break
+			}
+			sheet.write(x, hintsRow, hint.key, m.styles.footerKey)
+			x += ansi.StringWidth(hint.key) + 1
+			continue
+		}
+		sheet.write(x, hintsRow, hint.key, m.styles.footerKey)
+		x += ansi.StringWidth(hint.key)
+		sheet.write(x, hintsRow, " "+hint.label, m.styles.footerLabel)
+		x += 1 + ansi.StringWidth(hint.label) + 2
+	}
+}
+
+func (m Model) renderPopup() (popup, bool) {
 	switch m.mode {
 	case modeNew, modeEdit:
-		return overlay(base, m.renderForm())
+		return m.renderForm(), true
 	case modeCalendar:
-		return overlay(base, m.renderCalendar())
+		return m.renderCalendar(), true
 	case modeHelp:
-		return overlay(base, "Help\n\nj/↓ next   k/↑ previous   gg first   G last\nn new   e edit   s stop   c calendar\n? help   q quit\n\nEsc close")
+		return popup{title: "Help", preferredWidth: 64, lines: []popupLine{
+			{text: "j/↓ next   k/↑ previous   gg first   G last", style: m.styles.confirmation},
+			{text: "n new   e edit   s stop   c calendar", style: m.styles.confirmation},
+			{text: "? help   q quit", style: m.styles.confirmation},
+			{text: "", style: m.styles.confirmation, optional: true},
+			{text: "Esc close", style: m.styles.footerKey},
+		}}, true
 	case modeConfirm:
-		return overlay(base, m.errorText+"\n\ny yes   n/Esc cancel")
+		return popup{title: "Stop active entry?", preferredWidth: 60, lines: []popupLine{
+			{text: m.errorText, style: m.styles.confirmation},
+			{text: "", style: m.styles.confirmation, optional: true},
+			{text: "y yes   n/Esc cancel", style: m.styles.footerKey},
+		}}, true
 	case modeError:
-		return overlay(base, "Error\n\n"+m.errorText+"\n\nEsc close")
+		return popup{title: "Error", preferredWidth: 60, lines: []popupLine{
+			{text: m.errorText, style: m.styles.error},
+			{text: "", style: m.styles.error, optional: true},
+			{text: "Esc close", style: m.styles.footerKey},
+		}}, true
 	}
-	return base
+	return popup{}, false
 }
-func (m Model) renderSheet() string {
+
+func (m Model) renderForm() popup {
+	title := "New entry"
+	if m.mode == modeEdit {
+		title = "Edit entry"
+	}
+	labels := []string{"Name *", "Start", "End", "Description"}
+	lines := make([]popupLine, 0, 16)
+	for i, label := range labels {
+		labelStyle, fieldStyle := m.styles.formLabelInactive, m.styles.formInactive
+		marker := " "
+		if i == m.focus {
+			labelStyle, fieldStyle, marker = m.styles.formLabel, m.styles.formFocused, ">"
+		}
+		lines = append(lines, popupLine{text: marker + " " + label, style: labelStyle})
+		value := ansi.Strip(m.inputs[i].View())
+		if i == m.focus {
+			value += "▏"
+		}
+		lines = append(lines, popupLine{text: value, style: fieldStyle})
+	}
+	if m.focus == 0 {
+		items := m.filteredSuggestions()
+		for i, item := range items {
+			if i == 4 {
+				break
+			}
+			marker, style := " ", m.styles.suggestion
+			if i == m.suggestionIndex {
+				marker, style = ">", m.styles.suggestionSelected
+			}
+			lines = append(lines, popupLine{text: marker + " " + item, style: style, optional: true})
+		}
+	}
+	if m.formError != "" {
+		lines = append(lines, popupLine{text: "Error: " + m.formError, style: m.styles.error})
+	}
+	lines = append(lines, popupLine{text: "Tab next · Shift-Tab previous · Enter save · Esc cancel", style: m.styles.footerKey})
+	return popup{title: title, preferredWidth: 60, lines: lines}
+}
+
+func (m Model) renderCalendar() popup {
+	month := time.Date(m.calendar.Year(), m.calendar.Month(), 1, 0, 0, 0, 0, time.Local)
+	lines := []popupLine{
+		{text: month.Format("January 2006"), style: m.styles.popupTitle},
+		{text: " Mon  Tue  Wed  Thu  Fri  Sat  Sun", style: m.styles.calendar},
+	}
+	offset := (int(month.Weekday()) + 6) % 7
+	row := make([]popupSegment, 0, 7)
+	for range offset {
+		row = append(row, popupSegment{text: "     ", style: m.styles.calendar})
+	}
+	for day := 1; day <= daysInMonth(month); day++ {
+		date := time.Date(month.Year(), month.Month(), day, 0, 0, 0, 0, time.Local)
+		value := fmt.Sprintf(" %02d  ", day)
+		style := m.styles.calendar
+		if m.marks[date.Format(time.DateOnly)] {
+			value = fmt.Sprintf(" %02d* ", day)
+			style = m.styles.calendarMarked
+		}
+		if domain.SameDate(date, time.Now()) {
+			style = m.styles.calendarToday
+		}
+		if domain.SameDate(date, m.calendar) {
+			value = fmt.Sprintf("[%02d] ", day)
+			style = m.styles.calendarSelected
+		}
+		row = append(row, popupSegment{text: value, style: style})
+		if (offset+day)%7 == 0 {
+			lines = append(lines, popupLine{segments: row})
+			row = nil
+		}
+	}
+	if len(row) > 0 {
+		lines = append(lines, popupLine{segments: row})
+	}
+	lines = append(lines,
+		popupLine{text: "hjkl move · PgUp/PgDn month · t today", style: m.styles.confirmation, optional: true},
+		popupLine{text: "Enter open · Esc cancel", style: m.styles.footerKey},
+	)
+	return popup{title: "Calendar", preferredWidth: 40, lines: lines}
+}
+
+func (m Model) renderIntrinsic() string {
 	entries := m.session.List()
-	lines := []string{fmt.Sprintf("time — %s", m.date.Format("Mon 2006-01-02")), ""}
+	lines := []string{fmt.Sprintf("ttsh — %s", m.date.Format("Mon 2006-01-02")), ""}
 	if len(entries) == 0 {
-		lines = append(lines, "No entries yet", "n new entry   c calendar")
+		lines = append(lines, "No entries today", "n create entry")
 	} else {
-		for i, entry := range entries {
-			marker := " "
-			if i == m.selected {
+		for index, entry := range entries {
+			marker, end := " ", "..."
+			if index == m.selected {
 				marker = ">"
 			}
-			end := "..."
 			if entry.End != nil {
 				end = entry.End.String()
 			}
-			line := fmt.Sprintf("%s <%s> @%s -> %s", marker, entry.Name, entry.Start, end)
+			line := fmt.Sprintf("%s <%s> %s → %s", marker, entry.Name, entry.Start, end)
 			if entry.Description != "" {
-				line += " # " + entry.Description
+				line += " · " + entry.Description
 			}
 			lines = append(lines, line)
 		}
@@ -451,69 +718,13 @@ func (m Model) renderSheet() string {
 		selection = fmt.Sprintf("#%d %s", m.selected+1, domain.FormatDuration(m.session.EntryDuration(entries[m.selected])))
 	}
 	lines = append(lines, "", fmt.Sprintf("%s    %d entries · %s", selection, len(entries), domain.FormatDuration(m.session.CompletedTotal())), "n new   e edit   s stop   c calendar   ? help   q quit")
+	if panel, ok := m.renderPopup(); ok {
+		lines = append(lines, "", panel.title)
+		for _, line := range panel.lines {
+			lines = append(lines, line.text)
+		}
+	}
 	return strings.Join(lines, "\n")
 }
-func (m Model) renderForm() string {
-	title := "New entry"
-	if m.mode == modeEdit {
-		title = "Edit entry"
-	}
-	labels := []string{"Name *", "Start", "End", "Description"}
-	lines := []string{title, ""}
-	for i, label := range labels {
-		marker := " "
-		if i == m.focus {
-			marker = ">"
-		}
-		lines = append(lines, label, marker+m.inputs[i].View())
-	}
-	if m.focus == 0 {
-		items := m.filteredSuggestions()
-		if len(items) > 0 {
-			lines = append(lines, "Suggestions")
-			for i, item := range items {
-				marker := " "
-				if i == m.suggestionIndex {
-					marker = ">"
-				}
-				lines = append(lines, marker+item)
-			}
-		}
-	}
-	if m.formError != "" {
-		lines = append(lines, "", "Error: "+m.formError)
-	}
-	lines = append(lines, "", "Tab next · Shift-Tab previous · Enter save · Esc cancel")
-	return strings.Join(lines, "\n")
-}
-func (m Model) renderCalendar() string {
-	month := time.Date(m.calendar.Year(), m.calendar.Month(), 1, 0, 0, 0, 0, time.Local)
-	lines := []string{month.Format("January 2006"), "Mon Tue Wed Thu Fri Sat Sun"}
-	offset := (int(month.Weekday()) + 6) % 7
-	row := strings.Repeat("    ", offset)
-	for day := 1; day <= daysInMonth(month); day++ {
-		d := time.Date(month.Year(), month.Month(), day, 0, 0, 0, 0, time.Local)
-		value := fmt.Sprintf("%02d", day)
-		if m.marks[d.Format(time.DateOnly)] {
-			value += "*"
-		}
-		if domain.SameDate(d, m.calendar) {
-			value = "[" + value + "]"
-		}
-		row += fmt.Sprintf("%-4s", value)
-		if (offset+day)%7 == 0 {
-			lines = append(lines, row)
-			row = ""
-		}
-	}
-	if row != "" {
-		lines = append(lines, row)
-	}
-	lines = append(lines, "", "hjkl move · PgUp/PgDn month · t today", "Enter open · Esc cancel")
-	return strings.Join(lines, "\n")
-}
+
 func daysInMonth(month time.Time) int { return month.AddDate(0, 1, -1).Day() }
-func overlay(base, panel string) string {
-	style := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(1)
-	return base + "\n\n" + style.Render(panel)
-}

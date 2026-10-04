@@ -1876,3 +1876,163 @@ TUI and CLI are only adapters.
 All time-entry behavior lives in one
 shared application/domain implementation.
 ```
+
+---
+
+# 38. MVP-1 Addendum — TUI Layout and Visual Style
+
+This addendum refines the interactive presentation only. Existing interaction,
+CLI, persistence, locking, application, and domain rules remain authoritative.
+
+## 38.1. Purpose
+
+The TUI is a full alternate-screen daily sheet with compact information density.
+Its application identity is `ttsh`.
+
+## 38.2. Alternate-screen behavior
+
+`ttsh` enters the terminal alternate screen when the interactive adapter starts
+and restores the preceding shell contents cleanly when it exits, including
+after `q`, cancellation, or an error. Terminal control remains owned by the
+Bubble Tea program launch path.
+
+## 38.3. Viewport contract
+
+`tea.WindowSizeMsg` is the only source of viewport dimensions. Once a positive
+width and height are received, the rendered view occupies exactly that many
+terminal cells. A resize immediately redraws the full canvas and reflows an
+open form's fields. Before dimensions arrive, the view remains a compact
+intrinsic representation rather than a fabricated zero-sized frame.
+
+## 38.4. Compact density
+
+At approximately 80×24, retain one compact header row, a scrollable entry
+body, and two footer rows. Keep the entry region left aligned and no wider than
+96 columns; wider terminals add breathing room rather than stretched names,
+descriptions, or form fields.
+
+## 38.5. Visual direction
+
+Use one built-in dark muted-slate presentation: a dark blue-slate canvas, soft
+off-white foreground, desaturated slate metadata and borders, restrained
+cyan-blue accent, subtly lighter selected and status surfaces, muted
+green/cyan running state, and restrained red errors. This is a visual
+direction, not a copy of another application's branding, palette, glyphs,
+layout, or source.
+
+## 38.6. Semantic theme
+
+TUI palette literals belong to one built-in semantic theme. Its roles are
+`Background`, `Panel`, `Foreground`, `Muted`, `Border`, `Accent`, `Cursor`,
+`Selected`, `StatusBar`, `StatusText`, `EntryName`, `EntryStart`, `EntryEnd`,
+`EntryDescription`, `Running`, and `Error`. Renderers consume reusable styles
+derived from those roles; component-local color construction is not allowed.
+
+## 38.7. Header and footer
+
+The header shows a minimal `ttsh` identity and selected date with sparing
+accent. The first footer row shows the selected entry's `#N <live duration>`
+at left and `<count> entries · <completed total>` at right when both fit. The
+second footer row retains exactly the `n`, `e`, `s`, `c`, `?`, and `q` hints,
+with accent keys and muted labels. At narrow widths labels may be shortened,
+but their keys remain; selected-entry status takes precedence over the sheet
+summary.
+
+## 38.8. Sheet row layout
+
+Every entry has an explicit non-color-readable selected marker (`>`), name,
+`start → end` interval, and optional description. The selected row combines
+the marker, stronger foreground, and selected surface. An open entry still
+uses `...` for its end and a distinct running style; it does not animate.
+
+## 38.9. Empty sheet
+
+An empty sheet displays `No entries today` and `n create entry` within the
+same full canvas. It is not an unfinished blank screen.
+
+## 38.10. Responsive clipping and scrolling
+
+Text is clipped to its allocated display width with an ellipsis. The visible
+entry rows are one contiguous window that keeps the selected zero-based entry
+visible and indicates omitted rows above and below without changing selection
+or session data.
+
+## 38.11. Popup composition
+
+New/Edit, Calendar, Help, active-entry confirmation, and Error views are
+compact bordered panel overlays centered and clamped in the viewport. They are
+composed over the existing sheet canvas, preserving every uncovered base cell;
+modal text is never appended below the sheet. Preferred widths are 60 for
+form/edit, 40 for calendar, 64 for help, and 60 for confirmation/error, capped
+at viewport width minus four cells. Popup height is content height capped at
+viewport height minus four cells.
+
+## 38.12. Form presentation
+
+Forms use labels above unboxed fields, accent focus, muted inactive labels,
+and bounded suggestions with an explicit selected marker. Bubbles text inputs
+use the shared theme for prompt, cursor, text, and related field styling.
+Existing Tab, Shift-Tab, Enter, Esc, suggestion, validation, cancellation, and
+save behavior remains unchanged.
+
+## 38.13. Calendar presentation
+
+The calendar is a fixed-width Monday-first grid. Its five-cell day slots retain
+brackets for selection and `*` for dates with entries. Selection brackets take
+precedence. Selected, today, marked, and normal dates have separate semantic
+styles. Existing calendar navigation, opening, cancellation, day switching,
+and session recovery remain unchanged.
+
+## 38.14. Small popup policy
+
+When a terminal is smaller than a popup's preferred height, remove optional
+suggestion rows and secondary hints before removing the title, focused content,
+form errors, or close/save instruction. Popup bounds must never exceed the
+canvas.
+
+## 38.15. Non-color compatibility
+
+Color supplements, never carries, meaning. Selection, active state, entry
+position, and time interval remain readable through text markers, labels,
+brackets, `*`, and `...`.
+
+## 38.16. Scope exclusions
+
+This addendum does not change time-tracking behavior, CLI output or commands,
+YAML format, persistence, path resolution, locks, session ownership, domain
+validation, suggestion-provider behavior, or the existing modal state machine.
+It adds no animation, custom terminal escape handling, second UI/rendering
+library, new theme selector, copied external branding, or unrelated product
+features.
+
+## 38.17. Acceptance environment
+
+Acceptance includes a real terminal at 80×24 with isolated XDG state, then a
+larger resize and a return to 80×24. Add one completed and one active entry
+through the existing CLI commands before checking populated-sheet behavior.
+
+## 38.18. Acceptance criteria 1–7
+
+1. TUI launch enters the alternate buffer and exit restores the shell surface.
+2. A received 80×24 `WindowSizeMsg` renders an 80×24 canvas.
+3. A larger received viewport renders to its exact dimensions and returns to
+   80×24 without stale content.
+4. The 80×24 view retains header, scrollable body, and both footer rows.
+5. Wide terminals preserve compact left-aligned entry density.
+6. Empty sheets show the styled empty-state hint and creation instruction.
+7. Populated sheets show distinct name, time, description, selected, and
+   running treatment without relying on color.
+
+## 38.19. Acceptance criteria 8–14
+
+8. A selected active row visibly retains `>`, `...`, and its `#N` live-status
+   marker.
+9. Footer semantics retain `--`, zero-entry behavior, and `0h:00m`.
+10. Long text is clipped rather than escaping the allocated viewport region.
+11. A long list keeps the selected entry visible and signals omitted rows.
+12. New/Edit, Calendar, Help, confirmation, and Error panels remain within the
+    canvas and leave visible sheet content outside their borders.
+13. Form suggestions, focused fields, errors, calendar brackets, and marked
+    dates retain explicit non-color markers and existing key behavior.
+14. Resize, cancellation, save, stop, calendar day switch, error recovery,
+    `q`, and clean terminal restoration preserve all existing behavior.
