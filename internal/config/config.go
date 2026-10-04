@@ -54,7 +54,7 @@ func Load() (Config, error) {
 }
 
 func LoadPath(path string) (Config, error) {
-	cfg := Config{Suggestions: Suggestions{Timeout: defaultSuggestionTimeout}}
+	cfg := Config{Suggestions: Suggestions{Format: "lines", Timeout: defaultSuggestionTimeout}}
 	var raw fileConfig
 	if _, err := toml.DecodeFile(path, &raw); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -69,7 +69,7 @@ func LoadPath(path string) (Config, error) {
 	if cfg.Suggestions.Format == "" {
 		cfg.Suggestions.Format = "lines"
 	}
-	if cfg.Suggestions.Format != "lines" {
+	if cfg.Suggestions.Format != "lines" && cfg.Suggestions.Format != "json" {
 		return Config{}, fmt.Errorf("unsupported suggestions format %q", cfg.Suggestions.Format)
 	}
 	if raw.Suggestions.Timeout != "" {

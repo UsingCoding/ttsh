@@ -41,7 +41,7 @@ type Model struct {
 	inputs          []textinput.Model
 	focus           int
 	editIndex       int
-	suggestions     []string
+	suggestions     []suggestions.Suggestion
 	suggestionIndex int
 	calendar        time.Time
 	marks           map[string]bool
@@ -206,7 +206,7 @@ func (m *Model) openForm(edit bool, index int) {
 	m.configureInputs()
 	m.focus = 0
 	m.inputs[0].Focus()
-	m.suggestions = m.provider.Names(context.Background())
+	m.suggestions = m.provider.Suggestions(context.Background())
 	m.suggestionIndex = 0
 }
 
@@ -258,8 +258,11 @@ func (m *Model) updateForm(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.submitForm()
 		return *m, nil
 	case "tab":
-		if m.focus == 0 && len(m.filteredSuggestions()) > 0 {
-			m.inputs[0].SetValue(m.filteredSuggestions()[m.suggestionIndex])
+		if m.focus == 0 {
+			items := m.filteredSuggestions()
+			if len(items) > 0 {
+				m.inputs[0].SetValue(items[m.suggestionIndex].Name)
+			}
 		}
 		m.setFocus((m.focus + 1) % len(m.inputs))
 		return *m, nil
@@ -294,12 +297,12 @@ func (m *Model) moveSuggestion(delta int) {
 	}
 	m.suggestionIndex = (m.suggestionIndex + delta + len(items)) % len(items)
 }
-func (m *Model) filteredSuggestions() []string {
+func (m *Model) filteredSuggestions() []suggestions.Suggestion {
 	prefix := strings.ToLower(m.inputs[0].Value())
-	result := []string{}
-	for _, name := range m.suggestions {
-		if strings.HasPrefix(strings.ToLower(name), prefix) {
-			result = append(result, name)
+	result := make([]suggestions.Suggestion, 0, len(m.suggestions))
+	for _, suggestion := range m.suggestions {
+		if strings.HasPrefix(strings.ToLower(suggestion.Name), prefix) {
+			result = append(result, suggestion)
 		}
 	}
 	if m.suggestionIndex >= len(result) {
@@ -640,7 +643,11 @@ func (m Model) renderForm() popup {
 			if i == m.suggestionIndex {
 				marker, style = ">", m.styles.suggestionSelected
 			}
-			lines = append(lines, popupLine{text: marker + " " + item, style: style, optional: true})
+			text := marker + " " + item.Name
+			if item.Description != "" {
+				text += "  " + item.Description
+			}
+			lines = append(lines, popupLine{text: text, style: style, optional: true})
 		}
 	}
 	if m.formError != "" {

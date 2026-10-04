@@ -17,6 +17,43 @@ import (
 
 func key(value string) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(value)} }
 
+type structuredProvider struct {
+	items []suggestions.Suggestion
+}
+
+func (p structuredProvider) Suggestions(context.Context) []suggestions.Suggestion {
+	return p.items
+}
+
+func TestModelStructuredSuggestionDisplaysAndAcceptsOnlyName(t *testing.T) {
+	service := app.New(storage.New(storage.Paths{SheetsDir: t.TempDir()}), nil, false)
+	model, err := New(service, structuredProvider{items: []suggestions.Suggestion{{
+		Name: "YT-183", Description: "Migration to new db",
+	}}}, nil)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, model.session.Close()) }()
+
+	model = resizeModel(t, model, 100, 32)
+	updated, _ := model.Update(key("n"))
+	model = updated.(Model)
+	view := model.View()
+	require.Contains(t, view, "YT-183")
+	require.Contains(t, view, "Migration to new db")
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyTab})
+	model = updated.(Model)
+	require.Equal(t, "YT-183", model.inputs[0].Value())
+	require.Empty(t, model.inputs[3].Value())
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+	require.Equal(t, modeSheet, model.mode)
+	entries := model.session.List()
+	require.Len(t, entries, 1)
+	require.Equal(t, "YT-183", entries[0].Name)
+	require.Empty(t, entries[0].Description)
+}
+
 func TestModelNavigationFormsAndConfirmation(t *testing.T) {
 	service := app.New(storage.New(storage.Paths{SheetsDir: t.TempDir()}), nil, false)
 	now := time.Now()

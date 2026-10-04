@@ -547,7 +547,7 @@ format = "lines"
 timeout = "2s"
 ```
 
-Simple provider output:
+`lines` is the default format. Each non-empty trimmed output line is an entry name and cannot provide a description:
 
 ```text
 YT-517
@@ -555,7 +555,7 @@ YT-530
 YT-551
 ```
 
-A richer protocol may later support:
+Use `format = "json"` when a suggestion needs explanatory text. The command must emit one top-level JSON array of objects; each object has a required `name` and an optional `description`:
 
 ```json
 [
@@ -565,6 +565,8 @@ A richer protocol may later support:
   }
 ]
 ```
+
+The form displays the description beside the suggestion name. Accepting a suggestion fills only the Name field; its description is not copied into the entry description or persisted.
 
 Provider failure must never prevent manual entry.
 

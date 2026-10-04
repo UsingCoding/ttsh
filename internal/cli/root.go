@@ -68,7 +68,7 @@ func (d *dependencies) initialize(clock app.Clock) error {
 	}
 	d.service = app.New(storage.New(paths), clock, cfg.AllowParallelEntries)
 	if cfg.Suggestions.Enabled && len(cfg.Suggestions.Command) > 0 {
-		d.provider = suggestions.Command{Command: cfg.Suggestions.Command, Timeout: cfg.Suggestions.Timeout, Logger: d.logger}
+		d.provider = suggestions.Command{Command: cfg.Suggestions.Command, Format: cfg.Suggestions.Format, Timeout: cfg.Suggestions.Timeout, Logger: d.logger}
 	} else {
 		d.provider = suggestions.None{}
 	}
