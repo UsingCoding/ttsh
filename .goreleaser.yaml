@@ -1,0 +1,18 @@
+version: 2
+release:
+  github:
+    owner: usingcoding
+    name: ttsh
+
+builds:
+  - id: ttsh
+    main: ./cmd/ttsh
+    binary: ttsh
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w -X github.com/usingcoding/ttsh/internal/version.Version={{ .Version }}
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+archives:
+  - formats: [tar.gz]

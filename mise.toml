@@ -1,0 +1,16 @@
+[tools]
+go = "1.25.0"
+golangci-lint = "latest"
+goreleaser = "latest"
+
+[tasks.build]
+description = "Build release binaries with GoReleaser"
+run = "goreleaser build --snapshot --clean"
+
+[tasks.lint]
+description = "Run the configured static analysis suite"
+run = "golangci-lint run"
+
+[tasks.test]
+description = "Run the full Go test suite"
+run = "go test ./..."
