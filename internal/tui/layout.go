@@ -48,6 +48,7 @@ type canvasCell struct {
 	text         string
 	style        lipgloss.Style
 	continuation bool
+	rawANSI      bool
 }
 
 type canvas struct {
@@ -110,15 +111,39 @@ func (c *canvas) write(x, y int, value string, style lipgloss.Style) {
 	}
 }
 
+func (c *canvas) writeANSI(x, y int, value string) {
+	if y < 0 || y >= c.height || x >= c.width {
+		return
+	}
+	if x < 0 {
+		value = ansi.Cut(value, -x, ansi.StringWidth(value))
+		x = 0
+	}
+	value = ansi.Truncate(value, c.width-x, "")
+	width := ansi.StringWidth(value)
+	if width == 0 {
+		return
+	}
+	*c.cell(x, y) = canvasCell{text: value, rawANSI: true}
+	for offset := 1; offset < width; offset++ {
+		*c.cell(x+offset, y) = canvasCell{continuation: true}
+	}
+}
+
 func (c *canvas) render() string {
 	lines := make([]string, c.height)
 	for y := 0; y < c.height; y++ {
 		var line strings.Builder
 		for x := 0; x < c.width; x++ {
 			cell := c.cells[y*c.width+x]
-			if !cell.continuation {
-				line.WriteString(cell.style.Render(cell.text))
+			if cell.continuation {
+				continue
 			}
+			if cell.rawANSI {
+				line.WriteString(cell.text)
+				continue
+			}
+			line.WriteString(cell.style.Render(cell.text))
 		}
 		lines[y] = line.String()
 	}
@@ -167,6 +192,7 @@ type popupLine struct {
 	style    lipgloss.Style
 	segments []popupSegment
 	optional bool
+	rawANSI  bool
 }
 
 type popup struct {
@@ -225,6 +251,16 @@ func (c *canvas) popup(v viewport, panel popup, s styles) {
 		if row >= y+height-1 {
 			break
 		}
+		if line.rawANSI {
+			for _, rawLine := range strings.Split(line.text, "\n") {
+				if row >= y+height-1 {
+					break
+				}
+				c.writeANSI(x+1, row, ansi.Truncate(rawLine, innerWidth, ""))
+				row++
+			}
+			continue
+		}
 		value := line.value()
 		if len(line.segments) > 0 && ansi.StringWidth(value) <= innerWidth {
 			column := x + 1
@@ -262,6 +298,10 @@ func popupContentHeight(lines []popupLine, width int) int {
 	}
 	height := 1 // title
 	for _, line := range lines {
+		if line.rawANSI {
+			height += len(strings.Split(line.text, "\n"))
+			continue
+		}
 		height += len(wrapLine(line.value(), width-2))
 	}
 	return height

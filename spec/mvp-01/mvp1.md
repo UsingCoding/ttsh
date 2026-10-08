@@ -487,6 +487,8 @@ Esc          cancel
 
 Normal text-editing controls apply inside fields.
 
+Description soft-wraps to the field width. When it exceeds the visible rows, the field scrolls vertically to keep the cursor visible.
+
 ---
 
 # 9. Name suggestions

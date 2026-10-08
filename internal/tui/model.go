@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
@@ -27,6 +28,15 @@ const (
 	modeError
 )
 
+const (
+	nameField = iota
+	startField
+	endField
+	descriptionField
+	formFieldCount
+	descriptionHeight = 3
+)
+
 type Model struct {
 	service         *app.Service
 	provider        suggestions.Provider
@@ -39,6 +49,7 @@ type Model struct {
 	styles          styles
 	mode            mode
 	inputs          []textinput.Model
+	description     textarea.Model
 	focus           int
 	editIndex       int
 	suggestions     []suggestions.Suggestion
@@ -153,11 +164,11 @@ func (m Model) updateSheet(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "n":
 		m.gPending = false
-		m.openForm(false, 0)
+		return m, m.openForm(false, 0)
 	case "e":
 		m.gPending = false
 		if m.selected >= 0 {
-			m.openForm(true, m.selected+1)
+			return m, m.openForm(true, m.selected+1)
 		}
 	case "s":
 		m.gPending = false
@@ -178,7 +189,7 @@ func (m Model) updateSheet(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *Model) openForm(edit bool, index int) {
+func (m *Model) openForm(edit bool, index int) tea.Cmd {
 	values := []string{"", domain.TimeOfDayAt(time.Now()).String(), "", ""}
 	m.mode = modeNew
 	m.editIndex = 0
@@ -187,7 +198,7 @@ func (m *Model) openForm(edit bool, index int) {
 		entry, err := m.session.Get(index)
 		if err != nil {
 			m.showError(err)
-			return
+			return nil
 		}
 		values = []string{entry.Name, entry.Start.String(), "", entry.Description}
 		if entry.End != nil {
@@ -196,24 +207,32 @@ func (m *Model) openForm(edit bool, index int) {
 		m.mode = modeEdit
 		m.editIndex = index
 	}
-	m.inputs = make([]textinput.Model, 4)
+	m.inputs = make([]textinput.Model, descriptionField)
 	for i := range m.inputs {
 		input := textinput.New()
 		input.SetValue(values[i])
 		input.CharLimit = 256
 		m.inputs[i] = input
 	}
+	m.description = textarea.New()
+	m.description.SetValue(values[descriptionField])
+	m.description.CharLimit = 256
 	m.configureInputs()
-	m.focus = 0
-	m.inputs[0].Focus()
+	m.description.Blur()
+	m.focus = nameField
+	focusCmd := m.setFocus(nameField)
 	m.suggestions = m.provider.Suggestions(context.Background())
 	m.suggestionIndex = 0
+	return focusCmd
 }
 
 func (m *Model) configureInputs() {
 	width := 52
 	if viewport, ok := newViewport(m.width, m.height); ok {
 		width = min(52, max(viewport.width-10, 8))
+	}
+	if len(m.inputs) == 0 {
+		return
 	}
 	for i := range m.inputs {
 		m.inputs[i].Prompt = ""
@@ -223,6 +242,29 @@ func (m *Model) configureInputs() {
 		m.inputs[i].CompletionStyle = m.styles.suggestion
 		m.inputs[i].Cursor.Style = m.styles.cursor
 	}
+	focusedDescription := textarea.Style{
+		Base:        m.styles.formFocused,
+		CursorLine:  m.styles.formFocused,
+		EndOfBuffer: m.styles.formFocused,
+		Placeholder: m.styles.formFocused,
+		Prompt:      m.styles.formFocused,
+		Text:        m.styles.formFocused,
+	}
+	blurredDescription := textarea.Style{
+		Base:        m.styles.formInactive,
+		CursorLine:  m.styles.formInactive,
+		EndOfBuffer: m.styles.formInactive,
+		Placeholder: m.styles.formInactive,
+		Prompt:      m.styles.formInactive,
+		Text:        m.styles.formInactive,
+	}
+	m.description.Prompt = ""
+	m.description.ShowLineNumbers = false
+	m.description.FocusedStyle = focusedDescription
+	m.description.BlurredStyle = blurredDescription
+	m.description.Cursor.Style = m.styles.cursor
+	m.description.SetWidth(width)
+	m.description.SetHeight(descriptionHeight)
 }
 
 func (m *Model) updateModal(key tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -258,37 +300,46 @@ func (m *Model) updateForm(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.submitForm()
 		return *m, nil
 	case "tab":
-		if m.focus == 0 {
+		if m.focus == nameField {
 			items := m.filteredSuggestions()
 			if len(items) > 0 {
-				m.inputs[0].SetValue(items[m.suggestionIndex].Name)
+				m.inputs[nameField].SetValue(items[m.suggestionIndex].Name)
 			}
 		}
-		m.setFocus((m.focus + 1) % len(m.inputs))
-		return *m, nil
+		return *m, m.setFocus((m.focus + 1) % formFieldCount)
 	case "shift+tab":
-		m.setFocus((m.focus + len(m.inputs) - 1) % len(m.inputs))
-		return *m, nil
+		return *m, m.setFocus((m.focus + formFieldCount - 1) % formFieldCount)
 	case "up":
-		if m.focus == 0 {
+		if m.focus == nameField {
 			m.moveSuggestion(-1)
 			return *m, nil
 		}
 	case "down":
-		if m.focus == 0 {
+		if m.focus == nameField {
 			m.moveSuggestion(1)
 			return *m, nil
 		}
 	}
 	var cmd tea.Cmd
-	m.inputs[m.focus], cmd = m.inputs[m.focus].Update(key)
+	if m.focus == descriptionField {
+		m.description, cmd = m.description.Update(key)
+	} else {
+		m.inputs[m.focus], cmd = m.inputs[m.focus].Update(key)
+	}
 	m.suggestionIndex = 0
 	return *m, cmd
 }
-func (m *Model) setFocus(index int) {
-	m.inputs[m.focus].Blur()
+func (m *Model) setFocus(index int) tea.Cmd {
+	if m.focus == descriptionField {
+		m.description.Blur()
+	} else {
+		m.inputs[m.focus].Blur()
+	}
 	m.focus = index
-	m.inputs[m.focus].Focus()
+	if m.focus == descriptionField {
+		return m.description.Focus()
+	}
+	return m.inputs[m.focus].Focus()
 }
 func (m *Model) moveSuggestion(delta int) {
 	items := m.filteredSuggestions()
@@ -311,13 +362,13 @@ func (m *Model) filteredSuggestions() []suggestions.Suggestion {
 	return result
 }
 func (m *Model) submitForm() {
-	start, err := domain.ParseTimeOfDay(m.inputs[1].Value())
+	start, err := domain.ParseTimeOfDay(m.inputs[startField].Value())
 	if err != nil {
 		m.setFormError(err)
 		return
 	}
-	input := domain.EntryInput{Name: m.inputs[0].Value(), Start: start, Description: m.inputs[3].Value()}
-	if value := m.inputs[2].Value(); value != "" {
+	input := domain.EntryInput{Name: m.inputs[nameField].Value(), Start: start, Description: m.description.Value()}
+	if value := m.inputs[endField].Value(); value != "" {
 		end, err := domain.ParseTimeOfDay(value)
 		if err != nil {
 			m.setFormError(err)
@@ -619,7 +670,7 @@ func (m Model) renderForm() popup {
 		title = "Edit entry"
 	}
 	labels := []string{"Name *", "Start", "End", "Description"}
-	lines := make([]popupLine, 0, 16)
+	lines := make([]popupLine, 0, 18)
 	for i, label := range labels {
 		labelStyle, fieldStyle := m.styles.formLabelInactive, m.styles.formInactive
 		marker := " "
@@ -627,13 +678,16 @@ func (m Model) renderForm() popup {
 			labelStyle, fieldStyle, marker = m.styles.formLabel, m.styles.formFocused, ">"
 		}
 		lines = append(lines, popupLine{text: marker + " " + label, style: labelStyle})
-		value := ansi.Strip(m.inputs[i].View())
-		if i == m.focus {
-			value += "▏"
+		if i == descriptionField {
+			lines = append(lines, popupLine{text: m.description.View(), rawANSI: true})
+			continue
 		}
-		lines = append(lines, popupLine{text: value, style: fieldStyle})
+		input := m.inputs[i]
+		input.TextStyle = fieldStyle
+		input.Cursor.TextStyle = fieldStyle
+		lines = append(lines, popupLine{text: input.View(), rawANSI: true})
 	}
-	if m.focus == 0 {
+	if m.focus == nameField {
 		items := m.filteredSuggestions()
 		for i, item := range items {
 			if i == 4 {
@@ -728,7 +782,7 @@ func (m Model) renderIntrinsic() string {
 	if panel, ok := m.renderPopup(); ok {
 		lines = append(lines, "", panel.title)
 		for _, line := range panel.lines {
-			lines = append(lines, line.text)
+			lines = append(lines, line.value())
 		}
 	}
 	return strings.Join(lines, "\n")

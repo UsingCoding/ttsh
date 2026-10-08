@@ -3,11 +3,14 @@ package tui
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 	"github.com/stretchr/testify/require"
 	"github.com/usingcoding/ttsh/internal/app"
 	"github.com/usingcoding/ttsh/internal/domain"
@@ -42,8 +45,8 @@ func TestModelStructuredSuggestionDisplaysAndAcceptsOnlyName(t *testing.T) {
 
 	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyTab})
 	model = updated.(Model)
-	require.Equal(t, "YT-183", model.inputs[0].Value())
-	require.Empty(t, model.inputs[3].Value())
+	require.Equal(t, "YT-183", model.inputs[nameField].Value())
+	require.Empty(t, model.description.Value())
 
 	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	model = updated.(Model)
@@ -52,6 +55,122 @@ func TestModelStructuredSuggestionDisplaysAndAcceptsOnlyName(t *testing.T) {
 	require.Len(t, entries, 1)
 	require.Equal(t, "YT-183", entries[0].Name)
 	require.Empty(t, entries[0].Description)
+}
+
+func TestModelFormRendersBubbleCursorAtInputPosition(t *testing.T) {
+	savedProfile := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(savedProfile) })
+
+	service := app.New(storage.New(storage.Paths{SheetsDir: t.TempDir()}), nil, false)
+	model, err := New(service, suggestions.None{}, nil)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, model.session.Close()) }()
+
+	model = resizeModel(t, model, 100, 32)
+	updated, cmd := model.Update(key("n"))
+	require.NotNil(t, cmd)
+	model = updated.(Model)
+
+	cursorAtB := model.styles.cursor.Inline(true).Reverse(true).Render("b")
+	for index := range formFieldCount {
+		require.Equal(t, index, model.focus)
+		if index == descriptionField {
+			model.description.SetValue("ab")
+		} else {
+			model.inputs[model.focus].SetValue("ab")
+		}
+		updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyLeft})
+		model = updated.(Model)
+		if index == descriptionField {
+			model.description.Cursor.Blink = false
+		} else {
+			model.inputs[model.focus].Cursor.Blink = false
+		}
+		require.Contains(t, model.View(), cursorAtB)
+
+		if index < formFieldCount-1 {
+			updated, cmd = model.Update(tea.KeyMsg{Type: tea.KeyTab})
+			require.NotNil(t, cmd)
+			model = updated.(Model)
+		}
+	}
+
+	longValue := strings.Repeat("a", model.description.Width()+8)
+	model.description.SetValue(longValue)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	model = updated.(Model)
+	model.description.Cursor.Blink = false
+	form := model.renderForm()
+	inputLine := form.lines[2*descriptionField+1]
+	renderedLines := strings.Split(ansi.Strip(inputLine.text), "\n")
+	require.GreaterOrEqual(t, len(renderedLines), 2)
+	for _, line := range renderedLines {
+		require.LessOrEqual(t, ansi.StringWidth(line), model.description.Width()+1)
+	}
+	require.Contains(t, model.View(), model.styles.cursor.Inline(true).Reverse(true).Render("a"))
+}
+
+func TestModelDescriptionWrapsInNewAndEditForms(t *testing.T) {
+	savedProfile := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(savedProfile) })
+
+	service := app.New(storage.New(storage.Paths{SheetsDir: t.TempDir()}), nil, false)
+	model, err := New(service, suggestions.None{}, nil)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, model.session.Close()) }()
+
+	model = resizeModel(t, model, 100, 32)
+	updated, _ := model.Update(key("n"))
+	model = updated.(Model)
+	model.inputs[nameField].SetValue("Wrapped")
+	for range descriptionField {
+		updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyTab})
+		model = updated.(Model)
+	}
+	require.Equal(t, descriptionField, model.focus)
+
+	description := strings.Repeat("d", model.description.Width()+8)
+	model.description.SetValue(description)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	model = updated.(Model)
+	model.description.Cursor.Blink = false
+	assertWrappedDescription(t, model, description)
+
+	model.submitForm()
+	require.Equal(t, modeSheet, model.mode)
+	entries := model.session.List()
+	require.Len(t, entries, 1)
+	require.Equal(t, description, entries[0].Description)
+
+	updated, _ = model.Update(key("e"))
+	model = updated.(Model)
+	for range descriptionField {
+		updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyTab})
+		model = updated.(Model)
+	}
+	require.Equal(t, descriptionField, model.focus)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	model = updated.(Model)
+	model.description.Cursor.Blink = false
+	assertWrappedDescription(t, model, description)
+}
+
+func assertWrappedDescription(t *testing.T, model Model, description string) {
+	t.Helper()
+
+	form := model.renderForm()
+	inputLine := form.lines[2*descriptionField+1]
+	renderedLines := strings.Split(ansi.Strip(inputLine.text), "\n")
+	require.GreaterOrEqual(t, len(renderedLines), 2)
+	var visible strings.Builder
+	for _, line := range renderedLines {
+		require.LessOrEqual(t, ansi.StringWidth(line), model.description.Width()+1)
+		visible.WriteString(strings.TrimSpace(line))
+	}
+	require.Equal(t, description, visible.String())
+	require.Contains(t, model.View(), model.styles.cursor.Inline(true).Reverse(true).Render("d"))
 }
 
 func TestModelNavigationFormsAndConfirmation(t *testing.T) {
