@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -33,6 +34,16 @@ type dependencies struct {
 	provider suggestions.Provider
 	logger   *slog.Logger
 	runTUI   func(*app.Service, suggestions.Provider, *slog.Logger) error
+}
+
+type jsonEntry struct {
+	ID          int     `json:"id"`
+	Date        string  `json:"date"`
+	Name        string  `json:"name"`
+	Start       string  `json:"start"`
+	End         *string `json:"end"`
+	Description string  `json:"description"`
+	Duration    string  `json:"duration"`
 }
 
 func New(input Dependencies) *urfave.Command {
@@ -76,7 +87,7 @@ func (d *dependencies) initialize(clock app.Clock) error {
 }
 
 func newListCommand(deps *dependencies, clock app.Clock) *urfave.Command {
-	return &urfave.Command{Name: "list", Usage: "list entries", Flags: dateFlags(), Action: func(ctx context.Context, cmd *urfave.Command) error {
+	return &urfave.Command{Name: "list", Usage: "list entries", Flags: append(dateFlags(), jsonFlag()), Action: func(ctx context.Context, cmd *urfave.Command) error {
 		if err := deps.initialize(clock); err != nil {
 			return err
 		}
@@ -90,6 +101,13 @@ func newListCommand(deps *dependencies, clock app.Clock) *urfave.Command {
 		}
 		defer func() { _ = session.Close() }()
 		entries := session.List()
+		if cmd.Bool("json") {
+			result := make([]jsonEntry, len(entries))
+			for i, entry := range entries {
+				result[i] = newJSONEntry(date, i+1, entry, session.EntryDuration(entry))
+			}
+			return writeJSON(cmd, result)
+		}
 		if len(entries) == 0 {
 			_, err = fmt.Fprintf(output(cmd), "No entries for %s.\n", date.Format(time.DateOnly))
 			return err
@@ -111,7 +129,7 @@ func newListCommand(deps *dependencies, clock app.Clock) *urfave.Command {
 	}}
 }
 func newViewCommand(deps *dependencies, clock app.Clock) *urfave.Command {
-	return &urfave.Command{Name: "view", Usage: "view an entry", Arguments: []urfave.Argument{&urfave.StringArg{Name: "id"}}, Flags: dateFlags(), Action: func(ctx context.Context, cmd *urfave.Command) error {
+	return &urfave.Command{Name: "view", Usage: "view an entry", Arguments: []urfave.Argument{&urfave.StringArg{Name: "id"}}, Flags: append(dateFlags(), jsonFlag()), Action: func(ctx context.Context, cmd *urfave.Command) error {
 		if err := deps.initialize(clock); err != nil {
 			return err
 		}
@@ -132,6 +150,9 @@ func newViewCommand(deps *dependencies, clock app.Clock) *urfave.Command {
 		if err != nil {
 			return err
 		}
+		if cmd.Bool("json") {
+			return writeJSON(cmd, newJSONEntry(date, index, entry, session.EntryDuration(entry)))
+		}
 		end := "-"
 		if entry.End != nil {
 			end = entry.End.String()
@@ -141,7 +162,7 @@ func newViewCommand(deps *dependencies, clock app.Clock) *urfave.Command {
 	}}
 }
 func newAddCommand(deps *dependencies, clock app.Clock) *urfave.Command {
-	return &urfave.Command{Name: "add", Usage: "add an entry", Arguments: []urfave.Argument{&urfave.StringArg{Name: "name"}}, Flags: append(dateFlags(), &urfave.StringFlag{Name: "start"}, &urfave.StringFlag{Name: "end"}, &urfave.StringFlag{Name: "description"}), Action: func(ctx context.Context, cmd *urfave.Command) error {
+	return &urfave.Command{Name: "add", Usage: "add an entry", Arguments: []urfave.Argument{&urfave.StringArg{Name: "name"}}, Flags: append(dateFlags(), &urfave.StringFlag{Name: "start"}, &urfave.StringFlag{Name: "end"}, &urfave.StringFlag{Name: "description"}, jsonFlag()), Action: func(ctx context.Context, cmd *urfave.Command) error {
 		if err := deps.initialize(clock); err != nil {
 			return err
 		}
@@ -177,6 +198,9 @@ func newAddCommand(deps *dependencies, clock app.Clock) *urfave.Command {
 		if err != nil {
 			return err
 		}
+		if cmd.Bool("json") {
+			return writeJSON(cmd, newJSONEntry(date, index, entry, session.EntryDuration(entry)))
+		}
 		end := "..."
 		if entry.End != nil {
 			end = entry.End.String()
@@ -190,7 +214,7 @@ func newAddCommand(deps *dependencies, clock app.Clock) *urfave.Command {
 	}}
 }
 func newRemoveCommand(deps *dependencies, clock app.Clock) *urfave.Command {
-	return &urfave.Command{Name: "remove", Usage: "remove an entry", Arguments: []urfave.Argument{&urfave.StringArg{Name: "id"}}, Flags: dateFlags(), Action: func(ctx context.Context, cmd *urfave.Command) error {
+	return &urfave.Command{Name: "remove", Usage: "remove an entry", Arguments: []urfave.Argument{&urfave.StringArg{Name: "id"}}, Flags: append(dateFlags(), jsonFlag()), Action: func(ctx context.Context, cmd *urfave.Command) error {
 		if err := deps.initialize(clock); err != nil {
 			return err
 		}
@@ -211,6 +235,9 @@ func newRemoveCommand(deps *dependencies, clock app.Clock) *urfave.Command {
 		if err != nil {
 			return err
 		}
+		if cmd.Bool("json") {
+			return writeJSON(cmd, newJSONEntry(date, index, entry, session.EntryDuration(entry)))
+		}
 		end := "..."
 		if entry.End != nil {
 			end = entry.End.String()
@@ -228,6 +255,10 @@ func output(cmd *urfave.Command) io.Writer {
 }
 func dateFlags() []urfave.Flag {
 	return []urfave.Flag{&urfave.StringFlag{Name: "date", Usage: "sheet date (YYYY-MM-DD)"}}
+}
+
+func jsonFlag() urfave.Flag {
+	return &urfave.BoolFlag{Name: "json", Usage: "Print result as JSON"}
 }
 func commandDate(cmd *urfave.Command, clock app.Clock) (time.Time, error) {
 	value := cmd.String("date")
@@ -256,4 +287,25 @@ func now(clock app.Clock) time.Time {
 		return clock.Now()
 	}
 	return time.Now()
+}
+
+func newJSONEntry(date time.Time, id int, entry domain.Entry, duration time.Duration) jsonEntry {
+	var end *string
+	if entry.End != nil {
+		value := entry.End.String()
+		end = &value
+	}
+	return jsonEntry{
+		ID:          id,
+		Date:        date.Format(time.DateOnly),
+		Name:        entry.Name,
+		Start:       entry.Start.String(),
+		End:         end,
+		Description: entry.Description,
+		Duration:    domain.FormatDuration(duration),
+	}
+}
+
+func writeJSON(cmd *urfave.Command, value any) error {
+	return json.NewEncoder(output(cmd)).Encode(value)
 }

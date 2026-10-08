@@ -50,3 +50,106 @@ func TestCLICommandsUseSharedService(t *testing.T) {
 	_, err = run("add", "Second", "--date", "2026-09-29")
 	require.EqualError(t, err, "cannot start entry: #1 <First> is already active")
 }
+
+func TestCLIJSONCommands(t *testing.T) {
+	clock := testClock{value: time.Date(2026, 9, 29, 16, 0, 0, 0, time.Local)}
+	service := app.New(storage.New(storage.Paths{SheetsDir: t.TempDir()}), clock, false)
+	run := func(args ...string) (string, error) {
+		var output bytes.Buffer
+		command := New(Dependencies{Service: service, Clock: clock})
+		command.Writer = &output
+		err := command.Run(context.Background(), append([]string{"ttsh"}, args...))
+		return output.String(), err
+	}
+
+	output, err := run("add", "Meeting", "--date", "2026-09-29", "--start", "13:00", "--end", "13:45", "--description", "Architecture sync", "--json")
+	require.NoError(t, err)
+	require.JSONEq(t, `{
+		"id": 1,
+		"date": "2026-09-29",
+		"name": "Meeting",
+		"start": "13:00",
+		"end": "13:45",
+		"description": "Architecture sync",
+		"duration": "0h:45m"
+	}`, output)
+
+	output, err = run("add", "Review", "--date", "2026-09-29", "--start", "15:15", "--json")
+	require.NoError(t, err)
+	require.JSONEq(t, `{
+		"id": 2,
+		"date": "2026-09-29",
+		"name": "Review",
+		"start": "15:15",
+		"end": null,
+		"description": "",
+		"duration": "0h:45m"
+	}`, output)
+
+	output, err = run("list", "--date", "2026-09-29", "--json")
+	require.NoError(t, err)
+	require.JSONEq(t, `[
+		{
+			"id": 1,
+			"date": "2026-09-29",
+			"name": "Meeting",
+			"start": "13:00",
+			"end": "13:45",
+			"description": "Architecture sync",
+			"duration": "0h:45m"
+		},
+		{
+			"id": 2,
+			"date": "2026-09-29",
+			"name": "Review",
+			"start": "15:15",
+			"end": null,
+			"description": "",
+			"duration": "0h:45m"
+		}
+	]`, output)
+
+	output, err = run("view", "1", "--date", "2026-09-29", "--json")
+	require.NoError(t, err)
+	require.JSONEq(t, `{
+		"id": 1,
+		"date": "2026-09-29",
+		"name": "Meeting",
+		"start": "13:00",
+		"end": "13:45",
+		"description": "Architecture sync",
+		"duration": "0h:45m"
+	}`, output)
+
+	output, err = run("remove", "2", "--date", "2026-09-29", "--json")
+	require.NoError(t, err)
+	require.JSONEq(t, `{
+		"id": 2,
+		"date": "2026-09-29",
+		"name": "Review",
+		"start": "15:15",
+		"end": null,
+		"description": "",
+		"duration": "0h:45m"
+	}`, output)
+
+	output, err = run("remove", "1", "--date", "2026-09-29", "--json")
+	require.NoError(t, err)
+	require.JSONEq(t, `{
+		"id": 1,
+		"date": "2026-09-29",
+		"name": "Meeting",
+		"start": "13:00",
+		"end": "13:45",
+		"description": "Architecture sync",
+		"duration": "0h:45m"
+	}`, output)
+
+	output, err = run("list", "--date", "2026-09-29", "--json")
+	require.NoError(t, err)
+	require.JSONEq(t, `[]`, output)
+
+	output, err = run("view", "9", "--date", "2026-09-29", "--json")
+	require.Empty(t, output)
+	require.EqualError(t, err, "entry #9 does not exist for 2026-09-29")
+}

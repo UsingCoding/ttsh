@@ -880,6 +880,10 @@ Example:
 ttsh list --date 2026-09-25
 ```
 
+Every non-interactive command accepts a per-command `--json` flag. Successful `list --json` responses are a JSON array; successful `view`, `add`, and `remove` responses are one JSON entry object. Every successful response is newline-terminated.
+
+Each entry always has `id` (display ID), `date` (`YYYY-MM-DD`), `name`, `start` (`HH:MM`), `end` (`HH:MM` or `null` for an active entry), `description` (including `""`), and `duration` (for example, `0h:45m`). An empty JSON list is `[]`. JSON mode does not wrap responses or change failures: errors remain on stderr with a non-zero exit status.
+
 ---
 
 # 19. CLI — list entries
